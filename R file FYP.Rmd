@@ -1,0 +1,479 @@
+---
+title: "FYP Analysis
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(readr)
+
+```
+
+
+Calculating the significance of expected vs observed
+```{r}
+#n1 = number of bases in CTCF binding sites
+#n2 = size of the genome
+#x = number of somatic mutations in CTCF binding sites
+#t = total number of somatic mutations 
+#p =n1/n2
+#binom.test(x,t,p)
+
+#Intersected computational and experimental
+#n1 = 210,115
+#n2 = 3.2e9
+#x = 1427
+#t=14,827,473
+expected_combined <- (210115/3.2e9) 
+# calculate the chance of mutations occurring by chance -> percentage
+observed_combined <- (1427/ 14827473) 
+#binom.test(x,t,p)
+binom.test(1427, 14827473, expected_combined)
+
+#Computational enrichment score
+#n1 = 230,931
+#n2 = 3.2e9
+#x = 1498 (wc -l intersected_test_computational.bed)
+#t=14,827,473
+expected_computational <- (230931/3.2e9) 
+# calculate the chance of mutations occurring by chance -> percentage
+observed_computational<- (1498/ 14827473) 
+#binom.test(x,t,p)
+binom.test(1498 , 14827473, expected_computational)
+
+#Experimental enrichment score
+#n1 = 1,057,665,159
+#n2 = 3.2e9
+#x = 5,893,955 (wc -l intersected_test_experimental.bed)
+#t=14,827,473
+expected_experimental <- (1057665159/3.2e9)
+# expected probability of observing a mutation in a CTCF binding site by chance(p):n1/n2
+observed_experimental <- (5893955/ 14827473) 
+#binom.test(x,t,p)
+binom.test (5893955,14827473, expected_experimental)
+```
+The number of successes -> mutations in CTCF binding sites
+The number of trials -> total mutations
+p-value -> indicating the likelihood of observing the given number of successes under the null hypothesis of random mutation
+
+P-value is very small, indicating significant enrichment of mutations in CTCF binding sites compared to what would be expected by chance
+
+
+
+
+```{r}
+
+
+# Define data frame
+enrichment_data <- data.frame(
+  Method = c("Combined", "Computational", "Experimental"),
+  Expected = c(expected_combined, expected_computational, expected_experimental),
+  Observed = c(observed_combined, observed_computational, observed_experimental)
+)
+
+# Plot
+ggplot(enrichment_data, aes(x = Method, y = Observed / Expected)) +
+  geom_bar(stat = "identity", fill = "orange") +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  labs(
+    title = "Enrichment Score Comparison",
+    y = "Enrichment Score (Obs/Exp)",
+    x = "Method"
+  ) +
+  theme_minimal()
+
+
+```
+
+
+Frequency of occurrence into proportions
+
+```{r}
+# Read the TSV file
+cohorts <- read.table("~/tissue_count2.tsv", header = FALSE, col.names = c("COSMIC_PHENOTYPE_ID", "Count")) #Bedtools merged cancers and CTCF binding sites
+
+# Calculate the total count 
+total_count <- sum(cohorts$Count)
+#Calculates the total count by summing up the values in the Count column and stores it in total_count
+
+# Calculate proportions
+cohorts$Frequency <- cohorts$Count / total_count 
+#Divides each value in the Count column by the total_count and stores it in a new column called Frequency
+
+
+# Print the result
+print(cohorts)
+
+```
+#Adding the cancer type column to see which cancer is most frequent with what ID. Look at the specific cancer
+```{r}
+
+classification <- read_csv("~/classification.csv")
+
+
+CTCF_merged_data <- merge(classification, cohorts, by.x ="COSMIC_PHENOTYPE_ID", by.y=1)
+CTCF_merged_data <- CTCF_merged_data[,c("COSMIC_PHENOTYPE_ID", "SITE_PRIMARY", "Count", "Frequency")] #Only keep the 4 columns from merging
+CTCF_merged_data <- CTCF_merged_data %>% distinct(COSMIC_PHENOTYPE_ID, .keep_all = TRUE)
+
+ggplot(CTCF_merged_data, aes(x = reorder(SITE_PRIMARY,Frequency), y = Frequency )) +
+  geom_bar(stat = "identity", fill="skyblue") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(title = "Proportion of Cancer Cohorts", x = "Cancer Type", y = "Frequency")
+
+
+```
+
+#Investigating which cancer type is the most frequently mutated -> where the Cosmic IDs are found.
+```{r}
+#Now, focused on counting the general cancer category, not the ID necessarily anymore.
+#Count the frequency of occurrence of each cancer type
+category_freq<-CTCF_merged_data%>%
+  group_by(SITE_PRIMARY)%>%
+  arrange(factor(SITE_PRIMARY))%>%
+  summarize(TotalCount=sum(Count))%>%
+  mutate(Frequency= TotalCount/sum(TotalCount))%>%
+  arrange(desc(Frequency))
+print(category_freq)
+
+
+#Barplot Count
+top_n_categories<-25
+top_categories <- head(category_freq, top_n_categories)
+
+ggplot(top_categories, aes(x = reorder(SITE_PRIMARY, Frequency), y = Frequency)) +
+  geom_bar(stat = "identity", fill = "pink") +
+  labs(title = "Frequency of Mutations within CTCF Binding Sites Across Cancer Types", x = "Cancer Type", y = "Frequency") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+
+Preparing the data for Chi-Square Test
+
+##Investigating the frequency of mutations within cancers in general (COSMIC Data)
+
+```{r}
+#Arrange the Bed File of all cancers in the same order as cohorts 
+general_cancer <-read.table("~/Test_General_Cancer2.bed", header=FALSE, col.names = c("Count", "COSMIC_PHENOTYPE_ID"))
+
+# Calculate the total count
+total_count2 <- sum(general_cancer$Count)
+
+# Calculate proportions
+general_cancer$Frequency <- general_cancer$Count / total_count2 
+
+# Print the result
+general_cancer <- general_cancer[, c(2, 1, 3)]
+print(general_cancer)
+
+#Merge classification and general_cancer -> to match COSMIC_PHENOTYPE_ID to the cancer type and have the types
+general_cancer_merged <- merge(classification, general_cancer, by.x ="COSMIC_PHENOTYPE_ID", by.y=1,)
+general_cancer_merged <- general_cancer_merged[,c("COSMIC_PHENOTYPE_ID", "SITE_PRIMARY", "Count","Frequency")]#Only keep the 3 columns from merging
+general_cancer_merged <- general_cancer_merged %>% distinct(COSMIC_PHENOTYPE_ID, .keep_all = TRUE)
+general_cancer_merged <- arrange(general_cancer_merged, desc(Frequency))
+
+print(format(general_cancer_merged, scientific = FALSE))
+
+```
+
+```{r}
+
+cancer_freq<-general_cancer_merged%>%
+  group_by(SITE_PRIMARY)%>%
+  arrange(factor(SITE_PRIMARY))%>%
+  summarize(TotalCount=sum(Count))%>%
+  mutate(Frequency= TotalCount/sum(TotalCount))%>%
+  arrange(desc(Frequency))
+print(cancer_freq)
+
+
+
+#Barplot Count
+top_n_categories<-25
+top_categories <- head(cancer_freq, top_n_categories)
+
+ggplot(top_categories, aes(x = reorder(SITE_PRIMARY, Frequency), y = Frequency)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Frequency of Mutations Across Cancer Types: COSMIC Data", x = "Cancer Type", y = "Frequency") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+##Creating a plot with standard errors
+
+
+
+```{r}
+cancer_freq_trial<-merge(category_freq, cancer_freq, by.x = "SITE_PRIMARY", by.y = 1)
+cancer_freq_trial<- cancer_freq_trial[,c("SITE_PRIMARY","TotalCount.x", "TotalCount.y")]
+
+cancer_freq_trial$Proportion <-cancer_freq_trial$TotalCount.x/ cancer_freq_trial$TotalCount.y
+
+#Calculating Standard Error 
+cancer_freq_trial$SE<- sqrt((cancer_freq_trial$Proportion * (1-cancer_freq_trial$Proportion))/cancer_freq_trial$TotalCount.y)
+
+
+
+top_20_cancers_CTCF <- head(cancer_freq_trial[order(cancer_freq_trial$Proportion, decreasing = TRUE),], 25)
+e <- ggplot(top_20_cancers_CTCF, aes(x= reorder(SITE_PRIMARY, Proportion),y= Proportion,)) +
+  geom_point(stat="identity",
+           position = position_dodge())+
+  geom_errorbar(aes(ymin= Proportion-SE*2, ymax= Proportion +SE*2), width=0.5,
+                position = position_dodge(0.9))
+
+
+
+#Finish bar plot
+e + labs(title ="Proportion of mutations found within CTCF binding sites", x= "Cancer Type", y="Proportion")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggplot(top_20_cancers_CTCF, aes(x = reorder(SITE_PRIMARY, Proportion), y=Proportion,))+
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Proportion of Mutations Across Cancer Types", x = "Cancer Type", y = "Proportion") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+        
+cancer_freq <- cancer_freq%>%
+  mutate(SE = sqrt((Frequency*(1-Frequency))/TotalCount))
+
+top_25_cancers_general <- head(cancer_freq[order(cancer_freq$Frequency, decreasing = FALSE),], 25)
+f <- ggplot(top_25_cancers_general, aes(x= reorder(SITE_PRIMARY,Frequency), y= Frequency,)) +
+  geom_point(stat="identity",
+           position = position_dodge())+
+  geom_errorbar(aes(ymin= Frequency-SE*2, ymax=Frequency +SE*2), width=0.2,
+                position = position_dodge(0.9))
+
+
+#Finish bar plot
+f + labs(title ="Proportion of mutations found across all genomic regions", x= "Cancer Type", y="Frequency")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+
+```
+The long error bars show that the values are more spread out and less reliable -> greater uncertainty or variability in the data.
+
+
+
+```{r}
+# Initialize empty lists to store the counts for each cancer type
+a1_list <- c()
+a3_list <- c()
+
+# Iterate over each cancer type
+#This loop iterates over each unique cancer type in the SITE_PRIMARY column of the category_freq data frame, processing each cancer type individually
+for (target_cancer in unique(cancer_freq_trial$SITE_PRIMARY)) {
+  # a1 is the number of mutations in target_cancer that are in CTCF binding sites
+  # This is obtained by filtering TotalCount based on the condition that SITE_PRIMARY is equal to target_cancer
+  a1 <- cancer_freq_trial$TotalCount.x[cancer_freq_trial$SITE_PRIMARY == target_cancer]
+  # a3 is the number of mutations in target_cancer that are NOT in CTCF binding sites. Subtract a1 from the total count of mutations in target_cancer
+  a3 <- sum(cancer_freq_trial$TotalCount.y[cancer_freq_trial$SITE_PRIMARY == target_cancer]) - a1
+  # Append the counts to the lists
+  a1_list <- c(a1_list, a1)
+  a3_list <- c(a3_list, a3)
+}
+
+# Calculate a2 and a4 based on the collected counts
+# a2 is the number of mutations in other cancers that are in CTCF binding sites. This is obtained by subtracting the sum of a1_list from the total count of mutations across all cancer types.
+#a4 is the number of mutations in other cancers that are NOT in CTCF binding sites. This is obtained by subtracting the sum of a1_list and a3_list from the total count of mutations across all cancer types.
+a2 <- sum(cancer_freq_trial$TotalCount.x) - sum(a1_list)
+a4 <- sum(cancer_freq_trial$TotalCount.y) - sum(a1_list) - sum(a3_list)
+
+# Create the contingency table
+contingency_table <- matrix(c(sum(a1_list), a2, sum(a3_list), a4), nrow = 2, byrow = TRUE)
+# Rows represent mutations within and outside of CTCF binding sites, and the columns represent mutations in the target cancer types and other cancer types
+
+# Perform the chi-square test
+# This assesses the association between mutations within CTCF binding sites and the occurrence of mutations in the target cancer type compared to the other cancer types
+chisq_result <- chisq.test(contingency_table)
+
+# Print the contingency table
+print(contingency_table)
+
+# Print the chi-square test result
+print(chisq_result)
+# Create a data frame for the contingency table
+contingency_df <- data.frame(
+  Cancer_Type = c("Within CTCF Binding Sites", "Outside CTCF Binding Sites"),
+  Target_Cancer = c(sum(a1_list), sum(a3_list)),
+  Other_Cancers = c(a2, a4)
+)
+
+# Print the contingency table
+print(contingency_df)
+
+
+```
+
+
+
+```{r}
+# Initialize an empty list to store contingency tables
+contingency_tables <- list()
+
+# Iterate over each cancer type
+for (target_cancer in unique(category_freq$SITE_PRIMARY)) {
+  # Calculate a1 and a3 for the current cancer type
+  a1 <- category_freq$TotalCount[category_freq$SITE_PRIMARY == target_cancer]
+  a3 <- sum(cancer_freq$TotalCount[cancer_freq$SITE_PRIMARY == target_cancer]) - a1
+  
+  # Calculate a2 and a4 based on the collected counts
+  a2 <- sum(category_freq$TotalCount) - sum(a1)
+  a4 <- sum(cancer_freq$TotalCount) - sum(a1) - sum(a3)
+  
+  # Create the contingency table
+  contingency_table <- matrix(c(sum(a1), a2, sum(a3), a4), nrow = 2, byrow = TRUE)
+  
+  # Add the contingency table to the list
+  contingency_tables[[target_cancer]] <- contingency_table
+}
+
+# Print contingency tables for each cancer type
+for (i in 1:length(contingency_tables)) {
+  cat("Contingency Table for", names(contingency_tables)[i], ":\n")
+  print(contingency_tables[[i]])
+  cat("\n")
+}
+
+```
+
+
+
+
+
+```{r}
+# Sort category_freq by Frequency in descending order and select the top 25 cancers
+top_25_cancers <- head(category_freq, 25)
+
+# Initialize an empty list to store contingency tables and chi-square test results
+results_list <- list()
+
+# Iterate over the top 25 cancers
+for (target_cancer in top_25_cancers$SITE_PRIMARY) {
+  # Calculate a1 and a3 for the current cancer type
+  a1 <- category_freq$TotalCount[category_freq$SITE_PRIMARY == target_cancer]
+  a3 <- sum(cancer_freq$TotalCount[cancer_freq$SITE_PRIMARY == target_cancer]) - a1
+  
+  # Calculate a2 and a4 based on the collected counts
+  a2 <- sum(category_freq$TotalCount) - sum(a1)
+  a4 <- sum(cancer_freq$TotalCount) - sum(a1) - sum(a3)
+  
+  # Create the contingency table
+  contingency_table <- matrix(c(sum(a1), a2, sum(a3), a4), nrow = 2, byrow = TRUE)
+  
+  # Perform the chi-square test
+  chi_square_result <- try(chisq.test(contingency_table), silent = TRUE)
+  
+  # Store the contingency table and chi-square test result
+  results_list[[target_cancer]] <- list(contingency_table = contingency_table, chi_square_result = chi_square_result)
+}
+
+# Print contingency tables and chi-square test results for each cancer type
+for (i in 1:length(results_list)) {
+  cat("Results for", names(results_list)[i], ":\n")
+  print(results_list[[i]]$contingency_table)
+  cat("\n")
+  print(results_list[[i]]$chi_square_result)
+  cat("\n")
+  # Print results for significant p-values
+  
+}
+
+
+```
+```{r}
+# Sort category_freq by Frequency in descending order and select the top 25 cancers
+top_25_cancers <- head(cancer_freq_trial, 25)
+
+# Initialize an empty list to store contingency tables and chi-square test results
+results_list <- list()
+
+# Iterate over the top 25 cancers
+for (target_cancer in top_25_cancers$SITE_PRIMARY) {
+  # Calculate a1 and a3 for the current cancer type
+  a1 <- cancer_freq_trial$TotalCount.x[category_freq$SITE_PRIMARY == target_cancer]
+  a3 <- sum(cancer_freq_trial$TotalCount.y[cancer_freq$SITE_PRIMARY == target_cancer]) - a1
+  
+  # Calculate a2 and a4 based on the collected counts
+  a2 <- sum(cancer_freq_trial$TotalCount.x) - sum(a1)
+  a4 <- sum(cancer_freq_trial$TotalCount.y) - sum(a1) - sum(a3)
+  
+  # Create the contingency table
+  contingency_table <- matrix(c(sum(a1), a2, sum(a3), a4), nrow = 2, byrow = TRUE)
+  
+  # Perform the chi-square test
+  chi_square_result <- try(chisq.test(contingency_table), silent = TRUE)
+  
+  # Store the contingency table and chi-square test result
+  results_list[[target_cancer]] <- list(contingency_table = contingency_table, chi_square_result = chi_square_result)
+}
+
+# Print contingency tables and chi-square test results for each cancer type
+for (i in 1:length(results_list)) {
+  cat("Results for", names(results_list)[i], ":\n")
+  print(results_list[[i]]$contingency_table)
+  cat("\n")
+  print(results_list[[i]]$chi_square_result)
+  cat("\n")
+  # Print results for significant p-values
+  
+}
+```
+
+
+
+
+
+
+```{r}
+# Extract p-values from chi-square test results
+p_values <- sapply(results_list, function(x) if (!inherits(x$chi_square_result, "try-error")) x$chi_square_result$p.value else NA)
+
+#Extracts the p-values from the chi-square test for each cancer type from the results_list, checking if the chi-square test was successful. If the test failed, it assigns NA.
+
+# Create a data frame for visualization
+results_df <- data.frame(
+  Cancer_Type = names(results_list),
+  P_Value = p_values
+)
+#Retrieve names of the cancer types and p-values.
+
+# Remove rows with NA (for cases where chi-square test failed)
+results_df <- results_df[!is.na(results_df$P_Value), ]
+
+# Sort results by p-value in ascending order
+results_df <- results_df[order(results_df$P_Value), ]
+
+# Plot p-values
+library(ggplot2)
+
+ggplot(results_df, aes(x = reorder(Cancer_Type, P_Value), y = P_Value)) +
+  geom_point(color = "blue", size = 3) +
+  geom_hline(yintercept = 0.05, linetype = "dashed", color = "red") +
+  coord_flip() +
+  labs(title = "Chi-Square Test P-Values for Top 25 Cancers",
+       x = "Cancer Type",
+       y = "P-Value") +
+  theme_minimal()
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
