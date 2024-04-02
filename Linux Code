@@ -1,0 +1,127 @@
+# 1. Data acquisition
+
+##Data Downloaded from COSMIC, Genome Screen Mutant: https://cancer.sanger.ac.uk/cosmic/download#/,
+##Data Downloaded from CTCFBSDB 2.0, both computational and experimental: https://insulatordb.uthsc.edu/
+
+
+# 2. Data Curation
+
+COSMIC: 
+# Make a bed file -> Remove all indels and double SBSs 
+
+# The same mutation, in the same patient, appears more than once in that cosmic file.
+# A locus and an alt. allele defines a mutation (not just the locus)
+# It is possible for more than one variant to have the same locus / range or overlap with another variant.
+
+# If its a deletion or insertion then one of your GENOMIC_WT_ALLELE or GENOMIC_MUT_ALLELE fields (fields 24 and 25) will be blank. 
+# If its an insertion then GENOMIC_WT_ALLELE is blank, a deletion GENOMIC_MUT_ALLELE is blank
+# Field 15 - chromosome; 16- chromosome start ; 17 - chromosome stop ; 5 -> sample name
+
+# Along with the chromosome & start & end ranges you also parse out the patient sample id (field 5) which you append to the end of each record. 
+# Pipe through a sort that also accounts for that patient field -> This brings the duplicate entries together (i.e. the same mutation from the same patient) 
+# Removed by piping through the uniq command 
+# Sort the file 
+
+cat Cosmic_GenomeScreensMutant_v99_GRCh38.tsv| awk -F'\t'  '{if($1~/GENE_SYMBOL/) next; if(!($24~/^[GCAT]$/ && $25~/^[GCAT]$/)) next;  print "chr"$15"\t"($16-1)"\t"$17"\t"$5}' | sort -k1,1V -k2,2n -k3,3n -k4,4 | uniq | cut -f1-3 > Cosmic_SBS.bed
+
+wc -l Cosmic_SBS.bed
+14,827,473 Cosmic_SBS.bed
+wc -l Cosmic_GenomeScreensMutant_v99_GRCh38.tsv
+48,645,604 Cosmic_GenomeScreensMutant_v99_GRCh38.tsv
+
+
+CTCF Binding Sites: 
+
+#Download the computationally predicted CTCFDSB2.0 from the website
+
+# select only for human species 
+grep "Human" > allcomp.human.txt
+# make into a bed file - split the third column 
+awk 'BEGIN {OFS="\t"} NR > 1 {split($3, coords, /[:-]/); print coords[1], coords[2], coords[3]}' allcomp.human.txt >allcomp.human.bed
+# sort the file and merge
+# start off by sorting (easier to computationally analyse)
+# and merging - a merge will consolidate overlapping ranges together
+sort -k1,1V -k2,2n -k3,3n allcomp.human.bed > allcomp.human.sorted.bed
+bedbedtools merge -i allcomp.human.sorted.bed > allcomp.human.sorted.merged.bed
+
+#Download the experimental CTCFDSB2.0 from the website
+# select only for human species 
+grep "Human" > Human_CTCF_Bindingsites.txt
+# make into a bed file - split the third column 
+awk 'BEGIN {OFS="\t"} NR > 1 {split($3, coords, /[:-]/); print coords[1], coords[2], coords[3]}' Human_CTCF_Bindingsites.txt > Human_CTCF_Bindingsites.bed
+# Sort and Merge
+
+cat Human_CTCF_BindingSites.bed | sort -k1,1V -k2,2n -k3,3n > Human_CTCF_BindingSites.sorted.bed
+bedtools merge -i Human_CTCF_BindingSites.sorted.bed > Human_CTCF_BindingSites.sorted.merged.bed
+
+## Intersect both computational and experimental to find common binding sites
+bedtools intersect -a allcomp.human.sorted.merged.bed -b Human_CTCF_BindingSites.sorted.merged.bed -u > combined_CTCF_binding_sites.bed
+#how many of the predicted binding sites appear to be experimentally validated?
+wc -l combined_CTCF_binding_sites.bed
+12,142 combined_CTCF_binding_sites.bed -> sites inside the binding site
+
+## Intersect with Cosmic_SBS.bed file
+# If an entry in bed A intersects with the overlap of a number of entries in bed B
+# Then you are going to get one bed record output for each of the overlapping entries in B
+
+
+
+#Intersect the SBSs and all CTCF binding sites to check how many in CTCF binding sites have SBS mutations
+bedtools intersect -a Cosmic_SBS.bed -b combined_CTCF_binding_sites.bed > intersected_test.bed
+
+#Intersect computational
+bedtools intersect -a Cosmic_SBS.bed -b allcomp.human.sorted.merged.bed > intersected_test_computational.bed
+
+#Intersect experimental
+bedtools intersect -a Cosmic_SBS.bed -b Human_CTCF_BindingSites.sorted.merged.bed > intersected_test_experimental.bed
+
+
+
+
+Total length of merged intervals: GENOME STOP - GENOME START(+1)
+
+#The interval length is calculated by subtracting the start coordinate ($2+1) from the stop coordinate ($3). 
+#Adding +1 to the start coordinate accounts for the fact that the interval is inclusive on both ends. This ensures that the length of the interval is correctly calculated.
+
+cat combined_CTCF_binding_sites.bed| awk  '{total+=($3-($2+1))}END {print total}'
+210,115
+cat allcomp.human.sorted.merged.bed | awk '{total +=($3-$2+1))} END {print total}'
+230,931
+cat Human_CTCF_BindingSites.sorted.merged.bed| awk  '{total+=($3-$2+1))}END {print total}'
+1,057,665,159
+
+# Done the rest of the calculations then in R, for the binom.test.
+
+
+##Loci View 
+
+#Sort the lines based on GENOME START and GENOME STOP:
+sort -k2,3 intersected_test.bed | uniq -c > count_intersected_test.bed
+#Sort Count by Descending Order 
+sort -k1,1nr count_intersected_test.bed > descending_count_intersected_test.bed
+sort -k1,1nr count_intersected_test.bed |head
+     16 chr7    37907561        37907562  
+     14 chr1    12859733        12859734  
+     13 chr1    12859718        12859719  
+     11 chr13   45965259        45965260  
+     11 chr17   74617449        74617450  
+      9 chr3    45516214        45516215
+      8 chr11   65860862        65860863
+      8 chr2    88529229        88529230
+      5 chr1    12859725        12859726
+      5 chr7    72023697        72023698
+
+
+
+#Additional File done for R analysis -> matching COSMIC IDs with Types of Cancer.
+
+cat Cosmic_GenomeScreensMutant_v99_GRCh38.tsv| awk -F'\t'  '{if($1~/GENE_SYMBOL/) next; if(!($24~/^[GCAT]$/ && $25~/^[GCAT]$/)) next;  print "chr"$15"\t"($16-1)"\t"$17"\t"$5"\t"$6}' | sort -k1,1V -k2,2n -k3,3n -k4,4 | uniq | cut -f1-3,5 > Test_Sample.bed
+# Field 6 -> COSMIC_PHENOTYPE_ID
+
+bedtools intersect -a Test_Sample.bed -b combined_CTCF_binding_sites.bed -wa | sort -u > Test_tissue.bed
+# wa -> if there are overlaps found, the entry line from Test_Sample.bed will be written
+# sort u -> sorts the output from Bedtools and removes duplicates (-u flag). Since the output from Bedtools may contain duplicates due to multiple overlaps or other reasons, sorting and removing duplicates ensures that each line in the output is unique.
+
+
+
+
